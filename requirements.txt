@@ -1,0 +1,17 @@
+typing_inspect
+openai-agents[litellm]
+uvicorn[standard]
+fastapi  
+dotenv
+pydantic 
+matplotlib
+numpy
+requests
+python-dotenv
+motor
+pymongo
+timezonefinder
+pycountry
+apscheduler
+tavily-python
+python-multipart

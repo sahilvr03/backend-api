@@ -57,6 +57,10 @@ async def save_to_mongo(leads):
         else:
             await lead_collection.insert_one(lead)
 
+@app.get("/")
+async def check():
+    return {"status": "ok", "message": "API is running!"}
+
 @app.post("/api/scrape-leads", response_model=LeadResponse)
 async def scrape_leads_api(payload: LeadRequest):
     global scraped_leads
