@@ -45,7 +45,7 @@ def extract_json(raw: str):
         )
 
 async def save_to_mongo(leads):
-    """Insert leads into MongoDB (skip duplicates by email)."""
+    """Insert leads into MongoDB (skip duplicates by emmail)."""
     if not isinstance(leads, list):
         leads = [leads]
 
@@ -120,6 +120,6 @@ async def schedule_emails(payload: dict):
 
     result = await Runner.run(
         starting_agent=email_agent,
-        input=f"Schedule an email to these leads: {leads} at {send_time}."
+        input=f"Schedule an email to these leaads: {leads} at {send_time}."
     )
     return {"result": result.final_output}
