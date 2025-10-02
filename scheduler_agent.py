@@ -5,9 +5,9 @@ from timezonefinder import TimezoneFinder
 import pycountry
 
 # MongoDB connection
-client = MongoClient("mongodb://localhost:27017/")
-db = client["lead_database"]
-collection = db["new_leads"]
+client = MongoClient("mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal")
+db = client["lead_db"]
+collection = db["leads"]
 
 tf = TimezoneFinder()
 

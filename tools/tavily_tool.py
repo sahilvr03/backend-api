@@ -4,16 +4,14 @@ from typing import List
 from tavily import TavilyClient
 import requests
 import re
-import os
 
-# Tavily API key
+# Tavily + Google API keys
 TAVILY_API_KEY = "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"
-tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
-
-# Google Places API key
 GOOGLE_API_KEY = "AIzaSyD97k49aW_hPx87_BpHauUy2-6H38tJnz0"
 
-# Regex for emails
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+
+# Regex for extracting emails
 EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w+', re.I)
 
 @function_tool
@@ -22,7 +20,6 @@ def scrape_leads(query: str, max_results: int = 20) -> List[Lead]:
     Search for business leads using Tavily + Google Places API.
     Returns a list of leads with name, email, company, and phone.
     """
-
     leads: List[Lead] = []
 
     # -------- Tavily API Search --------

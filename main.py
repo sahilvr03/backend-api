@@ -4,12 +4,14 @@ from fastapi.responses import StreamingResponse
 from agents import Runner
 from models import LeadRequest, LeadResponse, Lead
 from agent import lead_agent
+from query_agent import query_agent
 from utils import leads_to_csv
+from email_agent import email_agent
 import io
 import json
 import re
 from motor.motor_asyncio import AsyncIOMotorClient
-from email_agent import email_agent
+from datetime import datetime
 
 app = FastAPI()
 
@@ -23,7 +25,7 @@ app.add_middleware(
 )
 
 # MongoDB setup
-MONGO_URI = "mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal"   # change if remote
+MONGO_URI = "mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["lead_db"]
 lead_collection = db["leads"]
@@ -45,7 +47,7 @@ def extract_json(raw: str):
         )
 
 async def save_to_mongo(leads):
-    """Insert leads into MongoDB (skip duplicates by emmail)."""
+    """Insert leads into MongoDB (skip duplicates by email)."""
     if not isinstance(leads, list):
         leads = [leads]
 
@@ -53,8 +55,10 @@ async def save_to_mongo(leads):
         if "email" in lead:
             existing = await lead_collection.find_one({"email": lead["email"]})
             if not existing:
+                lead["created_at"] = datetime.utcnow()
                 await lead_collection.insert_one(lead)
         else:
+            lead["created_at"] = datetime.utcnow()
             await lead_collection.insert_one(lead)
 
 @app.get("/")
@@ -65,30 +69,54 @@ async def check():
 async def scrape_leads_api(payload: LeadRequest):
     global scraped_leads
     try:
-        # AI Agent call
+        # Step 1: Call AI Agent
         result = await Runner.run(
             starting_agent=lead_agent,
             input=f"Find business leads for: {payload.query}. "
                   f"Return ONLY JSON array of leads with keys: name, email, company, phone."
         )
 
-        leads_data = extract_json(result.final_output)
+        print("=== RAW AI OUTPUT ===")
+        print(result.final_output)
 
+        # Step 2: Try to parse JSON
+        try:
+            leads_data = extract_json(result.final_output)
+        except Exception as parse_error:
+            print("JSON PARSE ERROR:", str(parse_error))
+            raise HTTPException(status_code=500, detail=f"Failed to parse AI output. Error: {str(parse_error)}")
+
+        # Step 3: Validate leads
         if not leads_data:
             raise HTTPException(
-                status_code=500,
+                status_code=404,
                 detail="No leads returned by the AI agent."
             )
 
-        scraped_leads = [Lead(**lead) for lead in leads_data]
+        print("=== LEADS DATA BEFORE MODEL ===")
+        print(leads_data)
 
-        # Save to MongoDB
-        await save_to_mongo([lead.dict() for lead in scraped_leads])
+        try:
+            scraped_leads = [Lead(**lead) for lead in leads_data]
+        except Exception as model_error:
+            print("MODEL VALIDATION ERROR:", str(model_error))
+            raise HTTPException(status_code=500, detail=f"Invalid lead format. Error: {str(model_error)}")
 
+        # Step 4: Save to MongoDB
+        try:
+            await save_to_mongo([lead.dict() for lead in scraped_leads])
+        except Exception as mongo_error:
+            print("MONGO SAVE ERROR:", str(mongo_error))
+            raise HTTPException(status_code=500, detail=f"Failed to save to MongoDB. Error: {str(mongo_error)}")
+
+        # Step 5: Return leads
         return {"leads": scraped_leads}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("GENERAL ERROR:", str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/api/export-csv")
 async def export_csv():
@@ -124,6 +152,39 @@ async def schedule_emails(payload: dict):
 
     result = await Runner.run(
         starting_agent=email_agent,
-        input=f"Schedule an email to these leaads: {leads} at {send_time}."
+        input=f"Schedule an email to these leads: {leads} at {send_time}."
     )
     return {"result": result.final_output}
+
+@app.post("/api/query-leads", response_model=LeadResponse)
+async def query_leads_api(payload: LeadRequest):
+    try:
+        # Call QueryAgent
+        result = await Runner.run(
+            starting_agent=query_agent,
+            input=f"Query leads: {payload.query}. Return JSON array of leads with keys: name, email, company, phone, source."
+        )
+
+        print("=== RAW AI OUTPUT ===")
+        print(result.final_output)
+
+        # Parse JSON
+        try:
+            leads_data = extract_json(result.final_output)
+        except Exception as parse_error:
+            print("JSON PARSE ERROR:", str(parse_error))
+            raise HTTPException(status_code=500, detail=f"Failed to parse AI output. Error: {str(parse_error)}")
+
+        # Validate leads
+        if not leads_data:
+            return {"leads": []}
+
+        print("=== LEADS DATA ===")
+        print(leads_data)
+
+        return {"leads": leads_data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("GENERAL ERROR:", str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
