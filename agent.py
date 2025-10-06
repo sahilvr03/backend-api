@@ -1,6 +1,7 @@
 from agents import Agent
 from agents.extensions.models.litellm_model import LitellmModel
 from tools.tavily_tool import scrape_leads
+from tools.hunteremail_tool import scrape_hunter_leads
 
 # Gemini API key
 GEMINI_API_KEY = "AIzaSyDyUverBS7o0HkMWlBVUKcOfi3xq1N1Nmk"
@@ -43,4 +44,21 @@ lead_agent = Agent(
     ),
     model=model,
     handoffs=[tavily_agent],
+)
+
+# Hunter.io Email Agent
+email_agent = Agent(
+    name="EmailAgent",
+    instructions=(
+        "You are an email-finding assistant. "
+        "Your role is to fetch and return verified email addresses of business leads "
+        "by using the Hunter.io API. "
+        "You take a list of company domains (e.g. 'openai.com', 'microsoft.com') "
+        "and return a structured list of leads with their emails, names (if available), "
+        "and associated company. "
+        "Use the 'scrape_hunter_leads' tool to perform the actual data fetching. "
+        "Always return leads in a clean structured format without duplicates."
+    ),
+    model=model,
+    tools=[scrape_hunter_leads],
 )
