@@ -2,7 +2,8 @@ import os
 import asyncio
 from datetime import datetime
 from pymongo import MongoClient
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Body,Request
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from agents import (
     Agent, Runner, AsyncOpenAI, OpenAIChatCompletionsModel,
@@ -36,7 +37,7 @@ model = OpenAIChatCompletionsModel(
 # ======================================
 
 @function_tool
-async def show_leads(query: str = "last 10") -> str:
+async def show_leads(query: str = "last 60 days") -> str:
     """Fetch lead information based on user query."""
     try:
         if "last" in query.lower():
@@ -61,8 +62,7 @@ async def show_leads(query: str = "last 10") -> str:
             response.append({
                 "name": lead.get("name", "N/A"),
                 "email": lead.get("email", "N/A"),
-                "status": lead.get("status", "N/A"),
-                "source": lead.get("source", "N/A"),
+                
             })
         return response
     except Exception as e:
@@ -186,9 +186,28 @@ async def draft_email(industry: str, tone: str = "professional"):
     email_text = await draft_email_template(industry, tone)
     return {"status": "success", "industry": industry, "tone": tone, "draft": email_text}
 
-@app.post("/chat")
-async def chat(query: str = Query(..., description="Chat query for AI Lead Assistant")):
-    """Chat with the AI Lead Assistant."""
-    result = await Runner.run(lead_agent, input=query, max_turns=3)
-    return {"status": "success", "query": query, "response": result.final_output}
+# ======================================
+# FIXED Chat Endpoint (JSON or Query)
+# ======================================
 
+
+class ChatRequest(BaseModel):
+    query: str
+
+@app.post("/chat")
+async def chat(request: Request):
+    """Chat with the AI Lead Assistant."""
+    try:
+        data = await request.json()
+        query = data.get("query")
+        if not query:
+            return {"status": "error", "message": "Missing 'query' in JSON body"}
+
+        result = await Runner.run(lead_agent, input=query, max_turns=3)
+        return {
+            "status": "success",
+            "query": query,
+            "response": result.final_output
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
