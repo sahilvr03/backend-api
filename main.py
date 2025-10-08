@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from agents import Runner
 from models import LeadRequest, LeadResponse, Lead
-from bot_api import lead_agent, show_leads, count_leads, get_email_stats, list_scheduled_emails, draft_email_template
+from agent import lead_agent
 from utils import leads_to_csv
 import io
 import json
@@ -11,11 +11,7 @@ import re
 from motor.motor_asyncio import AsyncIOMotorClient
 from email_agent import email_agent
 
-app = FastAPI(
-    title="Lead Management AI API",
-    description="AI-powered API for managing leads, drafting emails, and fetching stats.",
-    version="1.0.0"
-)
+app = FastAPI()
 
 # Allow frontend requests
 app.add_middleware(
@@ -27,7 +23,7 @@ app.add_middleware(
 )
 
 # MongoDB setup
-MONGO_URI = "mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal"
+MONGO_URI = "mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal"   # change if remote
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["lead_db"]
 lead_collection = db["leads"]
@@ -49,7 +45,7 @@ def extract_json(raw: str):
         )
 
 async def save_to_mongo(leads):
-    """Insert leads into MongoDB (skip duplicates by email)."""
+    """Insert leads into MongoDB (skip duplicates by emmail)."""
     if not isinstance(leads, list):
         leads = [leads]
 
@@ -63,39 +59,7 @@ async def save_to_mongo(leads):
 
 @app.get("/")
 async def check():
-    return {"status": "ok", "message": "Lead Management AI API is running!"}
-
-@app.get("/leads")
-async def get_leads(limit: int = 10):
-    data = await show_leads(f"last {limit}")
-    return {"status": "success", "data": data}
-
-
-@app.get("/count")
-async def get_count():
-    data = await count_leads()
-    return {"status": "success", "data": data}
-
-@app.get("/stats")
-async def get_stats():
-    data = await get_email_stats()
-    return {"status": "success", "data": data}
-
-@app.get("/scheduled")
-async def get_scheduled():
-    data = await list_scheduled_emails()
-    return {"status": "success", "data": data}
-
-@app.post("/draft_email")
-async def draft_email(industry: str, tone: str = "professional"):
-    email_text = await draft_email_template(industry, tone)
-    return {"status": "success", "industry": industry, "tone": tone, "draft": email_text}
-
-@app.post("/chat")
-async def chat(query: str = Query(..., description="Chat query for AI Lead Assistant")):
-    """Chat with the AI Lead Assistant."""
-    result = await Runner.run(lead_agent, input=query, max_turns=3)
-    return {"status": "success", "query": query, "response": result.final_output}
+    return {"status": "ok", "message": "API is running!"}
 
 @app.post("/api/scrape-leads", response_model=LeadResponse)
 async def scrape_leads_api(payload: LeadRequest):
@@ -160,6 +124,6 @@ async def schedule_emails(payload: dict):
 
     result = await Runner.run(
         starting_agent=email_agent,
-        input=f"Schedule an email to these leads: {leads} at {send_time}."
+        input=f"Schedule an email to these leaads: {leads} at {send_time}."
     )
     return {"result": result.final_output}
