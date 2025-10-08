@@ -40,33 +40,40 @@ model = OpenAIChatCompletionsModel(
 async def show_leads(query: str = "last 60 days") -> str:
     """Fetch lead information based on user query."""
     try:
-        if "last" in query.lower():
-            n = [int(s) for s in query.split() if s.isdigit()]
+        q = query.lower().strip()
+
+        if "all" in q:
+            leads = list(collection.find().sort("_id", -1))  # no limit 🚀
+
+        elif "last" in q:
+            n = [int(s) for s in q.split() if s.isdigit()]
             limit = n[0] if n else 10
             leads = list(collection.find().sort("_id", -1).limit(limit))
-        elif "today" in query.lower():
+
+        elif "today" in q:
             today = datetime.utcnow().date()
             leads = list(collection.find({
                 "createdAt": {"$gte": datetime(today.year, today.month, today.day)}
             }))
-        elif "pending" in query.lower():
+
+        elif "pending" in q:
             leads = list(collection.find({"status": {"$regex": "pending", "$options": "i"}}))
+
         else:
-            leads = list(collection.find().sort("_id", -1).limit(5))
+            leads = list(collection.find().sort("_id", -1).limit(10))
 
         if not leads:
             return "No leads found."
 
-        response = []
-        for lead in leads:
-            response.append({
-                "name": lead.get("name", "N/A"),
-                "email": lead.get("email", "N/A"),
-                
-            })
+        response = [
+            {"name": l.get("name", "N/A"), "email": l.get("email", "N/A")}
+            for l in leads
+        ]
         return response
+
     except Exception as e:
         return {"error": str(e)}
+
 
 @function_tool
 async def count_leads() -> str:
@@ -114,11 +121,11 @@ async def list_scheduled_emails() -> str:
 
 @function_tool
 async def draft_email_template(industry: str, tone: str = "professional") -> str:
-    """Generate AI-written email draft for a specific industry."""
+    """Generate AI-written email draft. Creates the gernal email not necessarily related to lead , drafting email should be based on user query."""
     prompt = f"Write a {tone} cold email template pitching AI-based lead automation for the {industry} industry."
     agent = Agent(
         name="EmailDrafter",
-        instructions="You write clear, persuasive cold emails that sound human.",
+        instructions="You write clear, natural, and human-like email drafts based on user input.",
         tools=[],
         model=model,
         model_settings=ModelSettings(temperature=0.7),
@@ -132,11 +139,13 @@ async def draft_email_template(industry: str, tone: str = "professional") -> str
 
 lead_agent = Agent(
     name="LeadManagerAI",
-    instructions="""
-    You are an AI Lead Management Assistant.
+    instructions="""You are an AI Lead Management Assistant.
     - Fetch, count, and summarize leads.
-    - Draft email templates.
     - Analyze database stats conversationally.
+    - If the user asks for an email draft, detect whether it's a general email or lead-related.
+      • If it is **lead-related**, use your business/lead context.
+      • If it is **general (e.g., personal, formal, professional, or unrelated to leads)**, write a
+        clear, properly formatted, human-like email without including any sales or lead-assistant tone.
     """,
     tools=[count_leads, get_email_stats, list_scheduled_emails,
            get_emails_sent_today, draft_email_template, show_leads],
