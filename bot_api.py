@@ -2,40 +2,35 @@ import os
 import asyncio
 from datetime import datetime
 from pymongo import MongoClient
-from fastapi import FastAPI, Query, Body,Request
-from pydantic import BaseModel
+from openai import OpenAI
+from fastapi import FastAPI, Query
 from dotenv import load_dotenv
 from agents import (
     Agent, Runner, AsyncOpenAI, OpenAIChatCompletionsModel,
     ModelSettings, function_tool, StopAtTools
 )
+from datetime import datetime, timedelta
 
-# ======================================
-# Environment Setup
-# ======================================
+
+# ----------------------------
+# Setup
+# ----------------------------
 load_dotenv()
 
-MONGO_URI = os.getenv("MONGO_URI")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-client = MongoClient(MONGO_URI)
+client = MongoClient(os.getenv("MONGO_URI"))
 db = client["lead_db"]
 collection = db["leads"]
 
-external_client = AsyncOpenAI(
-    api_key=GEMINI_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-)
+# Gemini/OpenAI model
+api_key = os.getenv("GEMINI_API_KEY")
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+external_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 model = OpenAIChatCompletionsModel(
     model="gemini-2.5-flash",
     openai_client=external_client,
 )
-
-# ======================================
-# Function Tools
-# ======================================
-
+ 
 @function_tool
 async def show_leads(query: str = "last 60 days") -> str:
     """Fetch lead information based on user query."""
@@ -137,7 +132,7 @@ async def draft_email_template(industry: str, tone: str = "professional") -> str
 # Lead Agent
 # ======================================
 
-lead_agent = Agent(
+lead_agent2 = Agent(
     name="LeadManagerAI",
     instructions="""You are an AI Lead Management Assistant.
     - Fetch, count, and summarize leads.
@@ -155,68 +150,45 @@ lead_agent = Agent(
         stop_at_tool_names=["get_email_stats", "list_scheduled_emails", "draft_email_template"]
     )
 )
-
-# ======================================
-# FastAPI Setup
-# ======================================
-
-app = FastAPI(
-    title="Lead Management AI API",
-    description="AI-powered API for managing leads, drafting emails, and fetching stats.",
-    version="1.0.0"
-)
-
-@app.get("/")
-def root():
-    return {"message": "🚀 Lead Management AI API is live!"}
-
-@app.get("/leads")
-async def get_leads(limit: int = 10):
-    data = await show_leads(f"last {limit}")
-    return {"status": "success", "data": data}
-
-@app.get("/count")
-async def get_count():
-    data = await count_leads()
-    return {"status": "success", "data": data}
-
-@app.get("/stats")
-async def get_stats():
-    data = await get_email_stats()
-    return {"status": "success", "data": data}
-
-@app.get("/scheduled")
-async def get_scheduled():
-    data = await list_scheduled_emails()
-    return {"status": "success", "data": data}
-
-@app.post("/draft_email")
-async def draft_email(industry: str, tone: str = "professional"):
-    email_text = await draft_email_template(industry, tone)
-    return {"status": "success", "industry": industry, "tone": tone, "draft": email_text}
-
-# ======================================
-# FIXED Chat Endpoint (JSON or Query)
-# ======================================
+# ----------------------------
+# Chat Loop with Memory
+# ----------------------------
 
 
-class ChatRequest(BaseModel):
-    query: str
+async def main():
+    print("💼 Lead Management Chatbot is ready! Type 'exit' to quit.\n")
 
-@app.post("/chat")
-async def chat(request: Request):
-    """Chat with the AI Lead Assistant."""
-    try:
-        data = await request.json()
-        query = data.get("query")
-        if not query:
-            return {"status": "error", "message": "Missing 'query' in JSON body"}
+    # Simple list to store conversation history
+    history = []
 
-        result = await Runner.run(lead_agent, input=query, max_turns=3)
-        return {
-            "status": "success",
-            "query": query,
-            "response": result.final_output
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    while True:
+        user_input = input("🧠 You: ").strip()
+        if user_input.lower() in ["exit", "quit"]:
+            break
+
+        # Add the user's message to memory
+        history.append({"role": "user", "content": user_input})
+
+        print("🤖 Thinking...\n")
+
+        # Combine history into a single string for context
+        full_context = "\n".join(
+            [f"{msg['role'].capitalize()}: {msg['content']}" for msg in history]
+        )
+
+        # Run the agent using the context as input
+        result = await Runner.run(
+            lead_agent2,
+            input=full_context,
+            max_turns=3
+        )
+
+        # Save assistant’s response in history
+        response_text = result.final_output
+        history.append({"role": "assistant", "content": response_text})
+
+        print(response_text)
+        print("-" * 50)
+
+if __name__ == "__main__":
+    asyncio.run(main())
