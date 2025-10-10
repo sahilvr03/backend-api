@@ -10,10 +10,11 @@ import json
 import re
 import html
 from motor.motor_asyncio import AsyncIOMotorClient
-from email_agent import email_agent
+from email_agent import email_collection, generate_email_body, EMAIL_USER, SMTP_SERVER, SMTP_PORT, EMAIL_PASS, email_agent
 from agent import lead_agent
 import asyncio
 from bson import ObjectId
+from datetime import datetime, timedelta
 
 app = FastAPI(
     title="Lead Management AI API",
@@ -33,10 +34,22 @@ MONGO_URI = "mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?ret
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["lead_dbb"]
 lead_collection = db["leadss"]
+email_collection = db["emails"]  # new collection for email leads
+
 
 scraped_leads = []
 
-def sanitize_mongo_doc(doc: dict) -> dict:
+def sanitize_mongo_doc(doc):
+    if not doc:
+        return doc
+    doc["_id"] = str(doc["_id"])
+    for k, v in doc.items():
+        if isinstance(v, datetime):
+            doc[k] = v.isoformat()  # convert datetime → "2025-10-10T12:00:00"
+    return doc
+
+
+def sanitize_mongo_doc2(doc: dict) -> dict:
     """Remove _id, convert ObjectId to str, remove None values, ensure JSON serializable."""
     safe_doc = {}
     for k, v in doc.items():
@@ -66,6 +79,47 @@ def extract_json(raw: str):
             except json.JSONDecodeError:
                 pass
         return []
+
+import random
+
+async def save_email_to_mongo(lead_dict):
+    """
+    Save only leads with email to a separate email collection.
+    Generate a subject line automatically.
+    """
+    if not lead_dict.get("email"):
+        return None
+
+    # Auto subject line generator (simple version)
+    subjects = [
+        f"Grow your business with {lead_dict.get('company', 'our solutions')}",
+        f"Partnership opportunity for {lead_dict.get('name', 'your company')}",
+        f"Unlock new opportunities in {lead_dict.get('country', 'your region')}",
+        f"Special solutions for {lead_dict.get('lead_type', 'businesses')}",
+        "Let’s collaborate and create impact together"
+    ]
+    subject = random.choice(subjects)
+
+    email_doc = {
+        "name": lead_dict.get("name"),
+        "email": lead_dict.get("email"),
+        "subject": subject,
+        "company": lead_dict.get("company"),
+        "country": lead_dict.get("country"),
+        "lead_type": lead_dict.get("lead_type"),
+        "created_at": datetime.utcnow()
+    }
+
+    # Avoid duplicates (unique email constraint)
+    existing = await email_collection.find_one({"email": email_doc["email"]})
+    if not existing:
+        result = await email_collection.insert_one(email_doc)
+        email_doc["_id"] = str(result.inserted_id)
+        print(f"Saved email lead: {email_doc['email']} with subject: {email_doc['subject']}")
+        return email_doc
+    
+    return existing
+
 
 async def save_to_mongo(lead, country=None, lead_type=None):
     lead_copy = {k: v for k, v in lead.items() if k != "_id" and v is not None}
@@ -188,24 +242,30 @@ async def scrape_leads_api(payload: LeadRequest):
                                 leads_parsed = [leads_parsed] if isinstance(leads_parsed, dict) else []
 
                         # --- Process parsed leads ---
-                        for lead_dict in leads_parsed:
-                            if isinstance(lead_dict, dict) and (lead_dict.get("email") or lead_dict.get("phone")):
-                                # Save to MongoDB
-                                saved_doc = await save_to_mongo(lead_dict, payload.country, payload.lead_type)
-                                
-                                # Sanitize the saved document
-                                safe_doc = sanitize_mongo_doc(saved_doc)
-                                
-                                # Add display fields for frontend
-                                safe_doc["display_contact"] = safe_doc.get("email") or safe_doc.get("phone", "")
-                                safe_doc["has_email"] = bool(safe_doc.get("email"))
-                                
-                                # Yield as JSON line
-                                yield json.dumps(safe_doc, ensure_ascii=False) + "\n"
-                                
-                                scraped_leads.append(Lead(**safe_doc))
-                                count += 1
-                                await asyncio.sleep(0.05)
+                        # Inside your stream_leads() where you process each parsed lead:
+                            for lead_dict in leads_parsed:
+                                if isinstance(lead_dict, dict) and (lead_dict.get("email") or lead_dict.get("phone")):
+                                    # Save to MongoDB (main leads collection)
+                                    saved_doc = await save_to_mongo(lead_dict, payload.country, payload.lead_type)
+                                    
+                                    # --- NEW: Save only emails separately ---
+                                    if lead_dict.get("email"):
+                                        await save_email_to_mongo(lead_dict)
+
+                                    # Sanitize the saved document
+                                    safe_doc = sanitize_mongo_doc(saved_doc)
+
+                                    # Add display fields for frontend
+                                    safe_doc["display_contact"] = safe_doc.get("email") or safe_doc.get("phone", "")
+                                    safe_doc["has_email"] = bool(safe_doc.get("email"))
+
+                                    # Yield as JSON line
+                                    yield json.dumps(safe_doc, ensure_ascii=False) + "\n"
+
+                                    scraped_leads.append(Lead(**safe_doc))
+                                    count += 1
+                                    await asyncio.sleep(0.05)
+
 
             print(f"Total leads streamed: {count}")
             if count == 0:
@@ -263,3 +323,291 @@ async def schedule_emails(payload: dict):
         input=f"Schedule an email to these leads: {leads} at {send_time}."
     )
     return {"result": result.final_output}
+
+from fastapi.responses import JSONResponse
+
+
+
+@app.get("/api/emails")
+async def get_emails():
+    try:
+        cursor = email_collection.find().sort("created_at", -1)
+        emails = []
+        async for doc in cursor:
+            emails.append(sanitize_mongo_doc2(doc))
+        return JSONResponse(content=emails)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+
+from email.mime.multipart import MIMEMultipart
+import smtplib
+from email.mime.text import MIMEText
+
+from fastapi import Query
+
+@app.post("/api/send-emails-eco")
+async def send_emails_api(limit: int = Query(10, description="Number of emails to send")):
+    cursor = email_collection.find({"status": {"$ne": "sent"}}).sort("created_at", -1).limit(limit)
+    results = []
+    
+    async for lead in cursor:
+        lead_id = lead["_id"]  # Original ObjectId rakhna hai
+        subject = lead.get("subject")
+        email = lead.get("email")
+        name = lead.get("name", "")
+        
+        if not email:
+            continue
+
+        try:
+            # AI generated body - ensure it returns a string
+            body = await generate_email_body(subject, lead)
+            
+            # Validate that body is a string
+            if not isinstance(body, str):
+                body = str(body) if body else "Hello, I would like to connect regarding potential collaboration opportunities."
+
+            msg = MIMEMultipart()
+            msg["From"] = EMAIL_USER
+            msg["To"] = email
+            msg["Subject"] = subject
+            
+            # Personalize the email if we have a name
+            if name:
+                personalized_body = f"Dear {name},\n\n{body}\n\nBest regards,\nYour Team"
+            else:
+                personalized_body = f"Hello,\n\n{body}\n\nBest regards,\nYour Team"
+                
+            msg.attach(MIMEText(personalized_body, "plain"))
+
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                server.login(EMAIL_USER, EMAIL_PASS)
+                server.sendmail(EMAIL_USER, email, msg.as_string())
+
+            # ✅ YEH IMPORTANT HAI: Database mein status update karo
+            await email_collection.update_one(
+                {"_id": lead_id},  # Original ObjectId use karo
+                {
+                    "$set": {
+                        "status": "sent",
+                        "sent_at": datetime.utcnow(),
+                        "last_attempt": datetime.utcnow()
+                    }
+                }
+            )
+            
+            results.append({"email": email, "subject": subject, "status": "sent"})
+            print(f"✅ Email sent to {email} and status updated in database")
+            
+        except Exception as e:
+            error_msg = f"failed: {str(e)}"
+            print(f"❌ Failed to send email to {email}: {error_msg}")
+            
+            # ✅ Failed attempt bhi track karo
+            await email_collection.update_one(
+                {"_id": lead_id},
+                {
+                    "$set": {
+                        "status": "failed",
+                        "last_attempt": datetime.utcnow(),
+                        "error": error_msg
+                    }
+                }
+            )
+            
+            results.append({"email": email, "subject": subject, "status": error_msg})
+
+        await asyncio.sleep(0.2)  # Rate limiting
+
+    return {"results": results}
+@app.get("/api/email-send-status")
+async def get_email_send_status():
+    """
+    Get detailed statistics about email sending status
+    """
+    try:
+        total_emails = await email_collection.count_documents({})
+        sent_emails = await email_collection.count_documents({"status": "sent"})
+        failed_emails = await email_collection.count_documents({"status": "failed"})
+        pending_emails = await email_collection.count_documents({"status": {"$exists": False}})
+        
+        return {
+            "total_emails": total_emails,
+            "sent_emails": sent_emails,
+            "failed_emails": failed_emails,
+            "pending_emails": pending_emails,
+            "success_rate": round((sent_emails / total_emails * 100), 2) if total_emails > 0 else 0
+        }
+    except Exception as e:
+        return {"error": str(e)}
+ 
+
+
+@app.get("/api/sent-emails")
+async def get_sent_emails(
+    limit: int = Query(50, description="Number of emails to return"),
+    page: int = Query(1, description="Page number"),
+    sort_by: str = Query("sent_at", description="Sort by field"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc")
+):
+    """
+    Get all emails with status 'sent'
+    """
+    try:
+        # Calculate skip for pagination
+        skip = (page - 1) * limit
+        
+        # Sort order
+        sort_direction = -1 if sort_order == "desc" else 1
+        
+        cursor = email_collection.find({"status": "sent"}).sort(sort_by, sort_direction).skip(skip).limit(limit)
+        
+        sent_emails = []
+        async for doc in cursor:
+            email_data = sanitize_mongo_doc2(doc)
+            
+            # Add formatted date for better display
+            if doc.get("sent_at"):
+                email_data["sent_at_formatted"] = doc["sent_at"].strftime("%Y-%m-%d %H:%M:%S")
+            
+            sent_emails.append(email_data)
+        
+        # Get total count for pagination info
+        total_sent = await email_collection.count_documents({"status": "sent"})
+        total_pages = (total_sent + limit - 1) // limit  # Ceiling division
+        
+        return {
+            "emails": sent_emails,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total_emails": total_sent,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_prev": page > 1
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+@app.get("/api/sent-emails-by-date")
+async def get_sent_emails_by_date(
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    limit: int = Query(50, description="Number of emails to return")
+):
+    """
+    Get sent emails within a date range
+    """
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        
+        cursor = email_collection.find({
+            "status": "sent",
+            "sent_at": {
+                "$gte": start_dt,
+                "$lte": end_dt
+            }
+        }).sort("sent_at", -1).limit(limit)
+        
+        sent_emails = []
+        async for doc in cursor:
+            email_data = sanitize_mongo_doc2(doc)
+            email_data["sent_at_formatted"] = doc["sent_at"].strftime("%Y-%m-%d %H:%M:%S")
+            sent_emails.append(email_data)
+        
+        return {
+            "emails": sent_emails,
+            "date_range": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "total_emails": len(sent_emails)
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+    
+
+
+@app.get("/api/recent-sent-emails")
+async def get_recent_sent_emails(
+    hours: int = Query(24, description="Last N hours"),
+    limit: int = Query(50, description="Number of emails to return")
+):
+    """
+    Get emails sent in the last N hours
+    """
+    try:
+        time_threshold = datetime.utcnow() - timedelta(hours=hours)
+        
+        cursor = email_collection.find({
+            "status": "sent",
+            "sent_at": {"$gte": time_threshold}
+        }).sort("sent_at", -1).limit(limit)
+        
+        recent_emails = []
+        async for doc in cursor:
+            email_data = sanitize_mongo_doc2(doc)
+            email_data["sent_at_formatted"] = doc["sent_at"].strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Calculate how long ago it was sent
+            time_diff = datetime.utcnow() - doc["sent_at"]
+            email_data["sent_ago"] = f"{time_diff.seconds // 3600}h {(time_diff.seconds % 3600) // 60}m ago"
+            
+            recent_emails.append(email_data)
+        
+        return {
+            "emails": recent_emails,
+            "time_period": f"last_{hours}_hours",
+            "total_emails": len(recent_emails)
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/search-sent-emails")
+async def search_sent_emails(
+    query: str = Query(..., description="Search in email, name, company or subject"),
+    limit: int = Query(50, description="Number of emails to return")
+):
+    """
+    Search within sent emails
+    """
+    try:
+        # Case-insensitive search across multiple fields
+        cursor = email_collection.find({
+            "status": "sent",
+            "$or": [
+                {"email": {"$regex": query, "$options": "i"}},
+                {"name": {"$regex": query, "$options": "i"}},
+                {"company": {"$regex": query, "$options": "i"}},
+                {"subject": {"$regex": query, "$options": "i"}}
+            ]
+        }).sort("sent_at", -1).limit(limit)
+        
+        search_results = []
+        async for doc in cursor:
+            email_data = sanitize_mongo_doc2(doc)
+            email_data["sent_at_formatted"] = doc["sent_at"].strftime("%Y-%m-%d %H:%M:%S")
+            search_results.append(email_data)
+        
+        return {
+            "results": search_results,
+            "search_query": query,
+            "total_found": len(search_results)
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+
