@@ -81,7 +81,8 @@ async def save_to_mongo(lead, country=None, lead_type=None):
 
 @app.on_event("shutdown")
 async def shutdown():
-    await client.close()
+    client.close()  # ✅ Correct
+    print("MongoDB connection closed.")
 
 @app.get("/")
 async def check():
@@ -113,9 +114,17 @@ async def draft_email(industry: str, tone: str = "professional"):
     return {"status": "success", "industry": industry, "tone": tone, "draft": email_text}
 
 @app.post("/chat")
-async def chat(query: str = Query(..., description="Chat query for AI Lead Assistant")):
-    result = await Runner.run(lead_agent2, input=query, max_turns=3)
-    return {"status": "success", "query": query, "response": result.final_output}
+async def chat(data: dict):
+    query = data.get("query")
+    agent_type = data.get("agent", "email")  # default = email
+
+    if agent_type == "lead":
+        result = await Runner.run(lead_agent2, input=query)
+    else:
+        result = await Runner.run(email_agent, input=query)
+    print(f"Agent result: {result.final_output[:200]}...")
+    return {"status": "success", "response": result.final_output}
+
 
 @app.post("/api/scrape-leads")
 async def scrape_leads_api(payload: LeadRequest):

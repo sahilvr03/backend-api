@@ -6,8 +6,8 @@ import pycountry
 
 # MongoDB connection
 client = MongoClient("mongodb+srv://vijay:baby9271@internsportal.oswhrxp.mongodb.net/?retryWrites=true&w=majority&appName=internsPortal")
-db = client["lead_db"]
-collection = db["leads"]
+db = client["lead_dbb"]
+collection = db["leadss"]
 
 tf = TimezoneFinder()
 

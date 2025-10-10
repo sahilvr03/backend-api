@@ -18,8 +18,8 @@ from datetime import datetime, timedelta
 load_dotenv()
 
 client = MongoClient(os.getenv("MONGO_URI"))
-db = client["lead_db"]
-collection = db["leads"]
+db = client["lead_dbb"]
+collection = db["leadss"]
 
 # Gemini/OpenAI model
 api_key = os.getenv("GEMINI_API_KEY")
